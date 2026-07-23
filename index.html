@@ -255,6 +255,120 @@
     transform: none;
   }
 
+  /* ---- advanced ---- */
+
+  .advanced{
+    width: min(640px, 92vw);
+    margin: -12px auto 36px;
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: var(--surface);
+  }
+
+  .advanced summary{
+    list-style: none;
+    cursor: pointer;
+    padding: 12px 18px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    display:flex;
+    align-items:center;
+    gap: 8px;
+    user-select:none;
+  }
+
+  .advanced summary::-webkit-details-marker{ display:none; }
+
+  .advanced summary::before{
+    content: '⚙';
+    color: var(--accent);
+    font-size: 13px;
+  }
+
+  .advanced summary:hover{ color: var(--text); }
+  .advanced summary:focus-visible{
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 12px;
+  }
+
+  .advanced-body{
+    padding: 4px 18px 18px;
+    border-top: 1px solid var(--hairline);
+    display:flex;
+    flex-direction:column;
+    gap: 4px;
+  }
+
+  .opt-row{
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding-top: 14px;
+  }
+
+  .opt-label{
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+
+  .segmented{
+    display:inline-flex;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    padding: 3px;
+    gap: 2px;
+    background: var(--bg);
+  }
+
+  .seg{
+    font-family: var(--font-body);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 7px 16px;
+    border-radius: 999px;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+
+  .seg:hover{ color: var(--text); }
+
+  .seg.active{
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .seg:focus-visible{
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .select{
+    font-family: var(--font-mono);
+    font-size: 13px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--hairline);
+    background: var(--surface-2);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .select:focus-visible{
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
   /* ---- now playing panel ---- */
 
   .panel{
@@ -345,6 +459,30 @@
     <button class="action ghost" id="stopBtn" disabled>Stop</button>
   </div>
 
+  <details class="advanced" id="advanced">
+    <summary>Advanced</summary>
+    <div class="advanced-body">
+      <div class="opt-row">
+        <span class="opt-label">Playback</span>
+        <div class="segmented" id="modeToggle" role="radiogroup" aria-label="Playback mode">
+          <button type="button" class="seg active" data-mode="loop" role="radio" aria-checked="true">Loop</button>
+          <button type="button" class="seg" data-mode="sequence" role="radio" aria-checked="false">Random sequence</button>
+        </div>
+      </div>
+      <div class="opt-row" id="intervalRow" hidden>
+        <span class="opt-label">Change every</span>
+        <select id="intervalSelect" class="select" aria-label="Sequence interval">
+          <option value="15">15 sec</option>
+          <option value="30" selected>30 sec</option>
+          <option value="45">45 sec</option>
+          <option value="60">1 min</option>
+          <option value="90">1.5 min</option>
+          <option value="120">2 min</option>
+        </select>
+      </div>
+    </div>
+  </details>
+
   <div class="panel" id="panel">
     <div class="panel-header">
       <div class="now">Playing <b id="panelKey">—</b></div>
@@ -386,9 +524,15 @@
   const randomBtn = document.getElementById('randomBtn');
   const closeBtn = document.getElementById('closeBtn');
   const watchLink = document.getElementById('watchLink');
+  const modeToggle = document.getElementById('modeToggle');
+  const intervalRow = document.getElementById('intervalRow');
+  const intervalSelect = document.getElementById('intervalSelect');
 
   let currentIndex = null;
   let nodeEls = [];
+  let mode = 'loop';                 // 'loop' | 'sequence'
+  let intervalMs = 30000;
+  let seqTimer = null;
 
   function layoutNodes(){
     const size = wheelWrap.clientWidth;
@@ -416,6 +560,7 @@
   }
 
   function selectKey(index, isRandom){
+    const wasVisible = panel.classList.contains('visible');
     if(currentIndex !== null && nodeEls[currentIndex]){
       nodeEls[currentIndex].classList.remove('active');
     }
@@ -442,10 +587,37 @@
     wheelWrap.classList.add('playing');
     stopBtn.disabled = false;
 
-    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if(!wasVisible){
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    scheduleSeq();
+  }
+
+  function pickRandomIndex(){
+    let idx;
+    if(KEYS.length > 1 && currentIndex !== null){
+      do { idx = Math.floor(Math.random() * KEYS.length); } while(idx === currentIndex);
+    } else {
+      idx = Math.floor(Math.random() * KEYS.length);
+    }
+    return idx;
+  }
+
+  function clearSeqTimer(){
+    if(seqTimer){ clearTimeout(seqTimer); seqTimer = null; }
+  }
+
+  // Re-armed each time a key is selected, so it advances on a rolling interval.
+  function scheduleSeq(){
+    clearSeqTimer();
+    if(mode === 'sequence' && currentIndex !== null){
+      seqTimer = setTimeout(() => selectKey(pickRandomIndex(), true), intervalMs);
+    }
   }
 
   function stopPlayback(){
+    clearSeqTimer();
     videoFrame.innerHTML = '';
     wheelWrap.classList.remove('playing');
     stopBtn.disabled = true;
@@ -461,14 +633,24 @@
     currentKeyLabel.textContent = '—';
   }
 
-  randomBtn.addEventListener('click', () => {
-    let idx;
-    if(KEYS.length > 1 && currentIndex !== null){
-      do { idx = Math.floor(Math.random() * KEYS.length); } while(idx === currentIndex);
-    } else {
-      idx = Math.floor(Math.random() * KEYS.length);
-    }
-    selectKey(idx, true);
+  randomBtn.addEventListener('click', () => selectKey(pickRandomIndex(), true));
+
+  modeToggle.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg');
+    if(!btn || btn.dataset.mode === mode) return;
+    mode = btn.dataset.mode;
+    modeToggle.querySelectorAll('.seg').forEach((s) => {
+      const on = s === btn;
+      s.classList.toggle('active', on);
+      s.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    intervalRow.hidden = mode !== 'sequence';
+    scheduleSeq();
+  });
+
+  intervalSelect.addEventListener('change', () => {
+    intervalMs = Number(intervalSelect.value) * 1000;
+    if(seqTimer){ scheduleSeq(); }  // re-arm with the new interval
   });
 
   stopBtn.addEventListener('click', stopPlayback);
