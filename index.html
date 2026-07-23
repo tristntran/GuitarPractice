@@ -174,6 +174,12 @@
     min-height: 60px;
   }
 
+  /* concealed random key — shown as "?" for ear training */
+  .wheel-center .current-key.hidden{
+    color: var(--text-muted);
+    opacity: 0.7;
+  }
+
   .bars{
     display:flex;
     align-items:flex-end;
@@ -469,6 +475,13 @@
           <button type="button" class="seg" data-mode="sequence" role="radio" aria-checked="false">Random sequence</button>
         </div>
       </div>
+      <div class="opt-row">
+        <span class="opt-label">Random key on wheel</span>
+        <div class="segmented" id="revealToggle" role="radiogroup" aria-label="Show random key on the wheel">
+          <button type="button" class="seg active" data-reveal="hide" role="radio" aria-checked="true">Hidden</button>
+          <button type="button" class="seg" data-reveal="show" role="radio" aria-checked="false">Shown</button>
+        </div>
+      </div>
       <div class="opt-row" id="intervalRow" hidden>
         <span class="opt-label">Change every</span>
         <select id="intervalSelect" class="select" aria-label="Sequence interval">
@@ -495,7 +508,7 @@
   </div>
 
   <footer>
-    Drone tones loop continuously once selected. Adjust the video's volume to sit under your instrument.
+    Random keys stay hidden on the wheel (shown as “?”) for ear training — the panel below reveals what's playing. Switch it to “Shown” under Advanced. Adjust the video's volume to sit under your instrument.
   </footer>
 
 <script>
@@ -527,12 +540,15 @@
   const modeToggle = document.getElementById('modeToggle');
   const intervalRow = document.getElementById('intervalRow');
   const intervalSelect = document.getElementById('intervalSelect');
+  const revealToggle = document.getElementById('revealToggle');
 
   let currentIndex = null;
   let nodeEls = [];
   let mode = 'loop';                 // 'loop' | 'sequence'
   let intervalMs = 30000;
   let seqTimer = null;
+  let revealRandom = false;          // when false, randomly-picked keys stay hidden on the wheel
+  let currentWasRandom = false;      // whether the current key was chosen randomly
 
   function layoutNodes(){
     const size = wheelWrap.clientWidth;
@@ -565,17 +581,23 @@
       nodeEls[currentIndex].classList.remove('active');
     }
     currentIndex = index;
+    currentWasRandom = isRandom;
     const node = nodeEls[index];
-    node.classList.add('active');
-    if(isRandom){
-      node.classList.remove('landed');
-      void node.offsetWidth; // restart animation
-      node.classList.add('landed');
+    const hidden = isRandom && !revealRandom;
+
+    if(!hidden){
+      node.classList.add('active');
+      if(isRandom){
+        node.classList.remove('landed');
+        void node.offsetWidth; // restart animation
+        node.classList.add('landed');
+      }
     }
 
     const item = KEYS[index];
-    currentKeyLabel.textContent = item.key;
-    panelKey.textContent = item.key;
+    currentKeyLabel.textContent = hidden ? '?' : item.key;
+    currentKeyLabel.classList.toggle('hidden', hidden);
+    panelKey.textContent = item.key;   // the panel/video still reveals the key
 
     videoFrame.innerHTML = '<iframe src="https://www.youtube.com/embed/' + item.id +
       '?autoplay=1&loop=1&playlist=' + item.id +
@@ -630,7 +652,18 @@
       nodeEls[currentIndex].classList.remove('active');
     }
     currentIndex = null;
+    currentWasRandom = false;
     currentKeyLabel.textContent = '—';
+    currentKeyLabel.classList.remove('hidden');
+  }
+
+  // Re-apply concealment to the current key when the reveal preference changes.
+  function applyRevealState(){
+    if(currentIndex === null) return;
+    const hidden = currentWasRandom && !revealRandom;
+    currentKeyLabel.textContent = hidden ? '?' : KEYS[currentIndex].key;
+    currentKeyLabel.classList.toggle('hidden', hidden);
+    nodeEls[currentIndex].classList.toggle('active', !hidden);
   }
 
   randomBtn.addEventListener('click', () => selectKey(pickRandomIndex(), true));
@@ -651,6 +684,20 @@
   intervalSelect.addEventListener('change', () => {
     intervalMs = Number(intervalSelect.value) * 1000;
     if(seqTimer){ scheduleSeq(); }  // re-arm with the new interval
+  });
+
+  revealToggle.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg');
+    if(!btn) return;
+    const show = btn.dataset.reveal === 'show';
+    if(show === revealRandom) return;
+    revealRandom = show;
+    revealToggle.querySelectorAll('.seg').forEach((s) => {
+      const on = s === btn;
+      s.classList.toggle('active', on);
+      s.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    applyRevealState();   // reveal/conceal the current key live
   });
 
   stopBtn.addEventListener('click', stopPlayback);
