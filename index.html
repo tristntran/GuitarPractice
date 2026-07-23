@@ -321,6 +321,7 @@
 
   .segmented{
     display:inline-flex;
+    flex-wrap: wrap;
     border: 1px solid var(--hairline);
     border-radius: 999px;
     padding: 3px;
@@ -412,7 +413,8 @@
     background: #000;
   }
 
-  .video-frame iframe{
+  .video-frame iframe,
+  .video-frame #ytplayer{
     position:absolute;
     inset:0;
     width:100%;
@@ -467,6 +469,7 @@
         <div class="segmented" id="modeToggle" role="radiogroup" aria-label="Playback mode">
           <button type="button" class="seg active" data-mode="loop" role="radio" aria-checked="true">Loop</button>
           <button type="button" class="seg" data-mode="sequence" role="radio" aria-checked="false">Random sequence</button>
+          <button type="button" class="seg" data-mode="atend" role="radio" aria-checked="false">At video end</button>
         </div>
       </div>
       <div class="opt-row" id="intervalRow" hidden>
@@ -491,7 +494,7 @@
         <button class="action ghost" id="closeBtn" style="padding:6px 14px; font-size:12px;">Close</button>
       </div>
     </div>
-    <div class="video-frame" id="videoFrame"></div>
+    <div class="video-frame" id="videoFrame"><div id="ytplayer"></div></div>
   </div>
 
   <footer>
@@ -519,7 +522,6 @@
   const currentKeyLabel = document.getElementById('currentKeyLabel');
   const panel = document.getElementById('panel');
   const panelKey = document.getElementById('panelKey');
-  const videoFrame = document.getElementById('videoFrame');
   const stopBtn = document.getElementById('stopBtn');
   const randomBtn = document.getElementById('randomBtn');
   const closeBtn = document.getElementById('closeBtn');
@@ -530,9 +532,62 @@
 
   let currentIndex = null;
   let nodeEls = [];
-  let mode = 'loop';                 // 'loop' | 'sequence'
+  let mode = 'loop';                 // 'loop' | 'sequence' | 'atend'
   let intervalMs = 30000;
+
+  // YouTube IFrame player
+  let player = null;
+  let playerReady = false;
+  let pendingItem = null;            // a key queued before the player finished loading
+
+  // pause-aware auto-advance countdown (sequence mode)
   let seqTimer = null;
+  let seqRemaining = 0;              // ms left until the next auto-advance
+  let seqStart = 0;                  // performance.now() when the current leg began
+
+  // Called by the YouTube IFrame API script once it has loaded.
+  window.onYouTubeIframeAPIReady = function(){
+    player = new YT.Player('ytplayer', {
+      width: '100%',
+      height: '100%',
+      playerVars: { autoplay: 0, playsinline: 1, rel: 0, modestbranding: 1 },
+      events: {
+        onReady: onPlayerReady,
+        onStateChange: onPlayerStateChange
+      }
+    });
+  };
+
+  function onPlayerReady(){
+    playerReady = true;
+    if(pendingItem){
+      const item = pendingItem;
+      pendingItem = null;
+      loadVideo(item);
+    }
+  }
+
+  function loadVideo(item){
+    if(!playerReady){ pendingItem = item; return; }
+    player.loadVideoById({ videoId: item.id });   // autoplays the new key
+  }
+
+  // A single handler drives looping and both auto-advance triggers, reading the
+  // live `mode` so switching modes mid-playback takes effect on the next event.
+  function onPlayerStateChange(e){
+    if(e.data === YT.PlayerState.ENDED){
+      if(mode === 'atend'){
+        selectKey(pickRandomIndex(), true);
+      } else if(currentIndex !== null){
+        player.seekTo(0, true);       // manual loop for 'loop' and 'sequence'
+        player.playVideo();
+      }
+    } else if(e.data === YT.PlayerState.PLAYING){
+      resumeCountdown();
+    } else if(e.data === YT.PlayerState.PAUSED){
+      pauseCountdown();
+    }
+  }
 
   function layoutNodes(){
     const size = wheelWrap.clientWidth;
@@ -577,9 +632,7 @@
     currentKeyLabel.textContent = item.key;
     panelKey.textContent = item.key;
 
-    videoFrame.innerHTML = '<iframe src="https://www.youtube.com/embed/' + item.id +
-      '?autoplay=1&loop=1&playlist=' + item.id +
-      '" title="Drone tone ' + item.key + '" allow="autoplay; encrypted-media" allowfullscreen></iframe>';
+    loadVideo(item);
 
     watchLink.href = 'https://www.youtube.com/watch?v=' + item.id;
 
@@ -591,7 +644,7 @@
       panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
-    scheduleSeq();
+    scheduleAdvance();
   }
 
   function pickRandomIndex(){
@@ -604,21 +657,55 @@
     return idx;
   }
 
-  function clearSeqTimer(){
+  function clearCountdown(){
     if(seqTimer){ clearTimeout(seqTimer); seqTimer = null; }
   }
 
-  // Re-armed each time a key is selected, so it advances on a rolling interval.
-  function scheduleSeq(){
-    clearSeqTimer();
-    if(mode === 'sequence' && currentIndex !== null){
-      seqTimer = setTimeout(() => selectKey(pickRandomIndex(), true), intervalMs);
+  function fireCountdown(){
+    seqTimer = null;
+    selectKey(pickRandomIndex(), true);   // re-arms via scheduleAdvance()
+  }
+
+  // Begin a fresh, full interval leg.
+  function armCountdown(){
+    clearCountdown();
+    seqRemaining = intervalMs;
+    seqStart = performance.now();
+    seqTimer = setTimeout(fireCountdown, seqRemaining);
+  }
+
+  // Bank the elapsed time and stop counting (video paused).
+  function pauseCountdown(){
+    if(!seqTimer) return;
+    clearTimeout(seqTimer);
+    seqTimer = null;
+    seqRemaining -= performance.now() - seqStart;
+    if(seqRemaining < 0) seqRemaining = 0;
+  }
+
+  // Continue counting the banked remainder (video resumed).
+  function resumeCountdown(){
+    if(mode !== 'sequence' || currentIndex === null || seqTimer) return;
+    seqStart = performance.now();
+    seqTimer = setTimeout(fireCountdown, Math.max(0, seqRemaining));
+  }
+
+  // Arm the rolling countdown for sequence mode only; loop/atend need no timer.
+  // Hold the countdown until the video is actually playing so a pause (or slow
+  // buffering) doesn't burn the interval.
+  function scheduleAdvance(){
+    clearCountdown();
+    if(mode !== 'sequence' || currentIndex === null) return;
+    armCountdown();
+    if(playerReady && player && player.getPlayerState &&
+       player.getPlayerState() !== YT.PlayerState.PLAYING){
+      pauseCountdown();
     }
   }
 
   function stopPlayback(){
-    clearSeqTimer();
-    videoFrame.innerHTML = '';
+    clearCountdown();
+    if(playerReady && player){ player.stopVideo(); }
     wheelWrap.classList.remove('playing');
     stopBtn.disabled = true;
   }
@@ -645,12 +732,12 @@
       s.setAttribute('aria-checked', on ? 'true' : 'false');
     });
     intervalRow.hidden = mode !== 'sequence';
-    scheduleSeq();
+    scheduleAdvance();
   });
 
   intervalSelect.addEventListener('change', () => {
     intervalMs = Number(intervalSelect.value) * 1000;
-    if(seqTimer){ scheduleSeq(); }  // re-arm with the new interval
+    scheduleAdvance();   // restart the current leg with the new interval
   });
 
   stopBtn.addEventListener('click', stopPlayback);
@@ -660,6 +747,8 @@
   layoutNodes();
   window.addEventListener('resize', layoutNodes);
 </script>
+
+<script src="https://www.youtube.com/iframe_api"></script>
 
 </body>
 </html>
